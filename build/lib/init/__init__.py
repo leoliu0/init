@@ -70,10 +70,10 @@ if socket.gethostname() == 'tr':
     othercon = create_engine('postgresql://leo@localhost:5432/other')
     tmpcon = create_engine('postgresql://leo@localhost:5432/tmp')
 else:
-    wrdscon = create_engine('postgresql://leo@129.94.138.103:5432/wrds')
-    con = create_engine('postgresql://leo@localhost:5432/leo')
-    othercon = create_engine('postgresql://leo@129.94.138.103:5432/other')
-    tmpcon = create_engine('postgresql://leo@129.94.138.103:5432/tmp')
+    wrdscon = create_engine('postgresql://leo@129.94.138.139:5432/wrds')
+    con = create_engine('postgresql://leo@129.94.138.139:5432/leo')
+    othercon = create_engine('postgresql://leo@129.94.138.139:5432/other')
+    tmpcon = create_engine('postgresql://leo@129.94.138.139:5432/tmp')
 
 
 def check_uniq(df, l):
@@ -87,7 +87,7 @@ def rwrds(query, parse_dates=None):
     if re.search(r'.pq$', query) or re.search(r'.pa$', query) or re.search(
             r'.parquet$', query):
         return pd.read_parquet(f'/mnt/da/Dropbox/wrds_dataset/{query}')
-    elif 'select ' in query or 'SELECT ' in sql:
+    elif 'select ' in query or 'SELECT ' in query:
         return pd.read_sql(query, wrdscon, parse_dates=parse_dates)
 
 
@@ -270,31 +270,6 @@ def rpq_sql(query):
     return df.rename(nc, axis=1)
 
 
-#  def rsql(*args,**kwargs):
-#  df = pd.read_sql(*args,**kwargs) if kwargs else pd.read_sql(*args)
-#  return df
-
-#  def rcsv(*args,**kwargs):
-#  df = pd.read_csv(*args,**kwargs) if kwargs else pd.read_csv(*args)
-#  return df
-
-#  def rpq(*args,**kwargs):
-#  df = pd.read_parquet(*args,**kwargs) if kwargs else pd.read_parquet(*args)
-#  return df
-
-#  def rstata(*args,**kwargs):
-#  df = pd.read_stata(*args,**kwargs) if kwargs else pd.read_stata(*args)
-#  return df
-
-#  def todate(*args,**kwargs):
-#  s = pd.to_datetime(*args,**kwargs) if kwargs else pd.to_datetime(*args)
-#  return s
-
-#  def tonum(*args,**kwargs):
-#  s = pd.to_numeric(*args,**kwargs) if kwargs else pd.to_numeric(*args)
-#  return s
-
-
 def writer(v, filename):
     with open(filename, 'w') as f:
         wr = csv.writer(f)
@@ -313,7 +288,14 @@ def loadpickle(filename):
 
 
 def sedfile(string, filename):
-    _, input, output, oper = string.split('/')
+    sta = string.split('/')
+    if len(sta) == 4:
+        _, input, output, oper = sta
+    elif len(sta) == 3:
+        _, input, oper = sta
+    else:
+        raise ValueError("cannot parse the input")
+
     if oper == 'g':
         for line in fileinput.input(filename, inplace=1):
             if re.search(input, line):
