@@ -119,8 +119,7 @@ def to_pandas(df):
 
 
 def initspark():
-    global spark
-    spark = SparkSession.builder.getOrCreate()
+    return SparkSession.builder.getOrCreate()
 
 
 def extract_table_names(query):
@@ -206,7 +205,6 @@ def dfname(df):
 
 
 def spark_sql(sql, folder=None):
-    initspark()
     import os
     tables = extract_table_names(sql)
     for tb in tables:
@@ -219,7 +217,6 @@ def spark_sql(sql, folder=None):
 
 
 def ssql(sql):
-    initspark()
     tables = extract_table_names(sql)
     for tb in tables:
         spark.createDataFrame(eval(tb)).createOrReplaceTempView(tb)
@@ -238,8 +235,11 @@ def spark_csv(file, **kwargs):
                           **kwargs)
 
 
-def reg_tb(path):
-    tb = os.path.basename(path)
+def reg_tb(path, name=None):
+    if name:
+        tb = name
+    else:
+        tb = os.path.basename(path)
     spark.read.parquet(path).createOrReplaceTempView(tb)
 
 
