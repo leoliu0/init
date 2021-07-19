@@ -88,6 +88,10 @@ def rwrds(query, parse_dates=None):
         return pd.read_parquet(f'/mnt/da/Dropbox/wrds_dataset/{query}')
     elif 'select ' in query or 'SELECT ' in query:
         return pd.read_sql(query, wrdscon, parse_dates=parse_dates)
+    elif len(re.findall(r'\w+', query)) == 1:
+        return pd.read_sql(f'''select * from {query}''',
+                           wrdscon,
+                           parse_dates=parse_dates)
 
 
 def read_other(query, parse_dates=None):
