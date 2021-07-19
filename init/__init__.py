@@ -32,7 +32,6 @@ import seaborn as sns
 import statsmodels.api as sm
 import wrds
 from fuzzywuzzy import fuzz
-from pandarallel import pandarallel
 from pandas import json_normalize
 from pandas import read_csv as rcsv
 from pandas import read_parquet as rpq
@@ -40,7 +39,6 @@ from pandas import read_sql as rsql
 from pandas import read_stata as rdta
 from pandas import to_datetime as todate
 from pandas import to_numeric as tonum
-from pandasql import sqldf as lsql
 from pyspark import *
 from pyspark.sql import *
 from pyspark.sql.types import *
@@ -63,8 +61,9 @@ pd.set_option('use_inf_as_na', True)
 pd.options.display.max_colwidth = 100
 pd.options.mode.chained_assignment = None  # default='warn'
 
-DROPBOX = '/mnt/da/Dropbox/'
+DROPBOX = '/mnt/dd/Dropbox/'
 if socket.gethostname() == 'tr':
+    from pandarallel import pandarallel
     wrdscon = create_engine('postgresql://leo@localhost:5432/wrds')
     con = create_engine('postgresql://leo@localhost:5432/leo')
     othercon = create_engine('postgresql://leo@localhost:5432/other')

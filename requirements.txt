@@ -1,0 +1,14 @@
+matplotlib
+pandas
+pandarallel
+psycopg2
+pyspark
+requests
+seaborn
+statsmodels
+wrds
+fuzzywuzzy
+scipy
+sklearn
+tqdm
+plotly
