@@ -69,10 +69,10 @@ if socket.gethostname() == 'tr':
     othercon = create_engine('postgresql://leo@localhost:5432/other')
     tmpcon = create_engine('postgresql://leo@localhost:5432/tmp')
 else:
-    wrdscon = create_engine('postgresql://leo@129.94.138.139:5432/wrds')
-    con = create_engine('postgresql://leo@129.94.138.139:5432/leo')
-    othercon = create_engine('postgresql://leo@129.94.138.139:5432/other')
-    tmpcon = create_engine('postgresql://leo@129.94.138.139:5432/tmp')
+    wrdscon = create_engine('postgresql://leo: @129.94.138.139:5432/wrds')
+    con = create_engine('postgresql://leo: @129.94.138.139:5432/leo')
+    othercon = create_engine('postgresql://leo: @129.94.138.139:5432/other')
+    tmpcon = create_engine('postgresql://leo: @129.94.138.139:5432/tmp')
 
 
 def check_uniq(df, l):
