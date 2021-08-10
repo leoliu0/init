@@ -13,3 +13,4 @@ sklearn
 tqdm
 plotly
 pyarrow
+linearmodels
