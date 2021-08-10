@@ -12,3 +12,4 @@ scipy
 sklearn
 tqdm
 plotly
+pyarrow
