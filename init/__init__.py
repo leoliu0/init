@@ -1,5 +1,6 @@
 import csv
 import fileinput
+from loguru import logger
 import io
 import itertools
 import json
@@ -21,6 +22,7 @@ from glob import glob
 from io import StringIO
 from multiprocessing import Pool
 from pathlib import Path
+from clickhouse_driver import Client as ch_client
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -50,6 +52,41 @@ from sqlalchemy import create_engine
 from tqdm import tqdm
 
 import plotly.express as px
+import hashlib
+
+ch_clt = ch_client('localhost')
+def rch(query, df_type='pandas',cache='memory'):
+    if df_type=='pandas':
+        x,y = ch_clt.execute(query,with_column_types=True)
+        return pd.DataFrame(x,columns=[c[0] for c in y])
+    if df_type=='spark':
+    # https://markelic.de/how-to-access-your-clickhouse-database-with-spark-in-python/
+    # https://github.com/housepower/ClickHouse-Native-JDBC
+        hash = hashlib.md5(query.encode()).hexdigest()
+        if os.path.exists(f'/tmp/{hash}'):
+            logger.info("use cached dataset")
+            return spark.read.parquet(f'/tmp/{hash}')
+        logger.info("cached dataset not found, run the query")
+        if os.system(f'''clickhouse-client --query "{query} format Parquet" > /tmp/{hash}
+                '''.encode())==0:
+            return spark.read.parquet(f'/tmp/{hash}')
+        else:
+            raise ValueError("query failed !! ")
+    raise ValueError("must return pandas or spark dataframe")
+
+def to_clickhouse(df,table):
+    client = ch_client('localhost')
+    return client.execute(f'INSERT INTO {table} VALUES', df.to_dict(orient='records'))
+
+def read(f,**kwargs):
+    if re.search('\.csv$',f):
+        return rcsv(f,**kwargs)
+    if re.search('\.dta$',f):
+        return rdta(f,**kwargs)
+    if re.search('(\.pq|\.parquet|\.par)$',f):
+        return rpq(f,**kwargs)
+    if re.search('\.sas7bdat$',f):
+        return pd.read_sas(f,encoding='latin1',**kwargs)
 
 sns.set()
 sys.setrecursionlimit(100000000)
@@ -99,13 +136,15 @@ def read_other(query, parse_dates=None):
     return df
 
 
-def genfyear(s):
+def genfyear(s,errors='raise'):
     if s.dtype == '<M8[ns]':
         return s.map(lambda x: x.year if x.month > 6 else x.year - 1)
     else:
-        s = pd.to_datetime(s)
+        s = pd.to_datetime(s,errors=errors)
         return s.map(lambda x: x.year if x.month > 6 else x.year - 1)
 
+def genfyear_spark(df,datecol):
+    return df.withColumn('fyear',F.when(F.month(datecol)>6,F.year(datecol)).otherwise(F.year(datecol)-1))
 
 def to_spark(df):
     uu = uuid.uuid1().hex
@@ -122,7 +161,9 @@ def to_pandas(df):
 
 
 def initspark():
-    return SparkSession.builder.getOrCreate()
+    global spark
+    spark = SparkSession.builder.getOrCreate()
+    return spark
 
 
 def extract_table_names(query):
@@ -319,3 +360,67 @@ def wget(url, fn=None):
 
 def peekwrds(table):
     return rwrds(f'''select * from {table} limit 10''')
+
+def create_table(df,table,ob,date_cols=[],load_data=False):
+    ds = df.dtypes.to_dict()
+    for date_col in date_cols:
+        df[date_col] = pd.to_datetime(df[date_col])
+    with open('/tmp/tesdsfsad.txt','w') as f:
+        print(f'CREATE TABLE IF NOT EXISTS {table} (',file=f)
+        for d in ds:
+            if d==ob or d in ob.replace('(','').replace(')','').split(','):
+                if 'int' in str(ds[d]) or 'Int' in str(ds[d]):
+                    print(d,'Int64',',',file=f)
+                elif 'float' in str(ds[d]):
+                    print(d,'Float64',',',file=f)
+                elif 'bool' in str(ds[d]):
+                    print(d,'Boolean',',',file=f)
+                elif 'datetime64[ns]' in str(ds[d]):
+                    print(d,'Int32',',',file=f)
+                else:
+                    print(d,'String',',',file=f)
+                continue
+            if 'int' in str(ds[d]) or 'Int' in str(ds[d]):
+                print(d,'Int64',' NULL,',file=f)
+            elif 'float' in str(ds[d]):
+                print(d,'Float64',' NULL,',file=f)
+            elif 'bool' in str(ds[d]):
+                print(d,'Boolean',' NULL,',file=f)
+            elif 'datetime64[ns]' in str(ds[d]):
+                print(d,'Int32',' NULL,',file=f)
+            else:
+                print(d,'String',' NULL,',file=f)
+
+        print(f'PRIMARY KEY {ob}',file=f)
+        print(') engine=MergeTree()',file=f)
+#         print(')',file=f)
+    with open('/tmp/tesdsfsad.txt') as f:
+        c = ch_client('localhost')
+        c.execute(f.read())
+    for d in ds:
+        if 'datetime64[ns]' in str(ds[d]):
+            df[d] = pd.to_numeric(df[d].dt.strftime('%Y%m%d')
+                    ).astype('Int32').replace([np.nan],[None])
+            continue
+        if 'Int' in str(ds[d]) or 'int' in str(ds[d]):
+            df[d] = df[d].astype('Int64').replace([np.nan],[None])
+            continue
+        df[d] = df[d].replace([np.nan],[None])
+    df.info()
+    if load_data:
+        return to_clickhouse(df,table)
+
+def cleantype(df):
+    for c,t in df.dtypes.to_dict().items():
+        if str(t)=='float64':
+            try:
+                df[c] = df[c].astype("Int64")
+            except:
+                pass
+            continue
+        if str(t)=='object':
+            try:
+                df[c] = todate(df[c])        
+            except:
+                pass
+    return df
