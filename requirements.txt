@@ -14,3 +14,6 @@ tqdm
 plotly
 pyarrow
 linearmodels
+loguru
+clickhouse_driver
+python-Levenshtein
