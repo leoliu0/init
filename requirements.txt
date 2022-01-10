@@ -1,5 +1,6 @@
 matplotlib
 pandas
+polars
 pandarallel
 psycopg2
 pyspark
