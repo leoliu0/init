@@ -23,7 +23,7 @@ from pandas import read_csv as rcsv
 from pandas import json_normalize
 from loguru import logger
 from icecream import ic
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 from clickhouse_driver import Client as ch_client
 import wrds
 import statsmodels.api as sm

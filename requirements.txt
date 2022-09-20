@@ -8,7 +8,6 @@ requests
 seaborn
 statsmodels
 wrds
-fuzzywuzzy
 scipy
 sklearn
 tqdm
@@ -17,9 +16,11 @@ pyarrow
 linearmodels
 loguru
 clickhouse_driver
-python-Levenshtein
 icecream
 duckdb
 altair
 altair_saver
 conectorx
+pyreadstat
+jupyterlab
+icecream
