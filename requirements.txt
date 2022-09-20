@@ -18,3 +18,8 @@ linearmodels
 loguru
 clickhouse_driver
 python-Levenshtein
+icecream
+duckdb
+altair
+altair_saver
+conectorx
