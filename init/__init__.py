@@ -1,6 +1,50 @@
+from altair.utils.data import limit_rows
+from tqdm.notebook import tqdm, trange
+import pyreadstat
+from IPython.display import display
+from pprint import pprint
+import connectorx as cx
+import random
+from sqlalchemy import create_engine
+from sklearn import preprocessing
+from scipy.stats.mstats import winsorize
+from scipy import stats
+from pyspark.sql.window import Window
+from pyspark.sql.types import *
+from pyspark.sql import *
+from pyspark import pandas as ps
+import pyspark.sql.functions as F
+from pandas import to_numeric as tonum
+from pandas import to_datetime as todate
+from pandas import read_stata as rdta
+from pandas import read_sql as rsql
+from pandas import read_parquet as rpq
+from pandas import read_csv as rcsv
+from pandas import json_normalize
+from loguru import logger
+from icecream import ic
+from fuzzywuzzy import fuzz
+from clickhouse_driver import Client as ch_client
+import wrds
+import statsmodels.api as sm
+import seaborn as sns
+import requests
+import pyarrow.parquet as pq
+import pyarrow as pa
+import psycopg2
+import polars as p
+from polars import col as c
+import plotly.express as px
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.style.use("tableau-colorblind10")
+import duckdb as dk
+import argparse
 import csv
 import fileinput
-from loguru import logger
+import hashlib
 import io
 import itertools
 import json
@@ -17,97 +61,144 @@ import urllib
 import uuid
 import warnings
 from collections import *
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta
 from glob import glob
 from io import StringIO
 from multiprocessing import Pool
 from pathlib import Path
-from clickhouse_driver import Client as ch_client
-import pyarrow.parquet as pq
-import pyarrow as pa
-import duckdb as dk
-import polars as p
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import psycopg2
-import pyspark.sql.functions as F
-import requests
-import seaborn as sns
-import statsmodels.api as sm
-import wrds
-from fuzzywuzzy import fuzz
-from pandas import json_normalize
-from pandas import read_csv as rcsv
-from pandas import read_parquet as rpq
-from pandas import read_sql as rsql
-from pandas import read_stata as rdta
-from pandas import to_datetime as todate
-from pandas import to_numeric as tonum
-from pyspark import *
-from pyspark.sql import *
-from pyspark.sql.types import *
-from pyspark.sql.window import Window
-from scipy import stats
-from scipy.stats.mstats import winsorize
-from sklearn import preprocessing
-from sqlalchemy import create_engine
-from tqdm import tqdm, trange
+import altair as alt
 
-import plotly.express as px
-import hashlib
+alt.data_transformers.disable_max_rows()
 
 ch_clt = ch_client("localhost")
 
 
-def rch(query, df_type="pandas", cache="memory"):
+def rch(query, df_type="pandas", cache="memory", force_read=False):
+    hash = hashlib.md5(query.encode()).hexdigest()
     if df_type == "pandas":
+        if os.path.exists(f"/tmp/{hash}") and not force_read:
+            logger.info("use cached dataset")
+            return rpq(f"/tmp/{hash}")
         x, y = ch_clt.execute(query, with_column_types=True)
-        return pd.DataFrame(x, columns=[c[0] for c in y])
-    if df_type == "spark" or df_type == "polars":
+        df = pd.DataFrame(x, columns=[c[0] for c in y])
+        df.to_parquet(f"/tmp/{hash}")
+        return df
+    if df_type == "spark" or df_type == "spandas":
+        logger.info(f"use {df_type}")
+        if os.path.exists(f"/tmp/{hash}") and not force_read:
+            logger.info("use cached dataset")
+            if df_type == "spandas":
+                sp.set_option("compute.default_index_type", "distributed")
+                return sp.read_parquet(f"/tmp/{hash}")
+            else:
+                spark = spark_init()
+                return spark.read.parquet(f"/tmp/{hash}")
+        logger.info("cached dataset not found, run the query")
         # https://markelic.de/how-to-access-your-clickhouse-database-with-spark-in-python/
         # https://github.com/housepower/ClickHouse-Native-JDBC
-        hash = hashlib.md5(query.encode()).hexdigest()
-        if os.path.exists(f"/tmp/{hash}"):
-            logger.info("use cached dataset")
-            return spark.read.parquet(f"/tmp/{hash}")
-        logger.info("cached dataset not found, run the query")
         if (
             os.system(
-                f"""clickhouse-client --query "{query} format Parquet" > /tmp/{hash}
-                """.encode()
+                f"""clickhouse-client --query "{query} format Parquet" > /tmp/{hash} """.encode()
             )
             == 0
         ):
-            if df_type == "polars":
-                return p.read_parquet(f"/tmp/{hash}")
+            if df_type == "spandas":
+                sp.set_option("compute.default_index_type", "distributed")
+                return sp.read_parquet(f"/tmp/{hash}")
             else:
+                spark = spark_init()
                 return spark.read.parquet(f"/tmp/{hash}")
         else:
             raise ValueError("query failed !! ")
     raise ValueError("must return pandas or spark dataframe")
 
 
+def rcp(query, cache="memory", force_read=False):
+
+    """
+    read clichouse to polars
+    """
+    hash = hashlib.md5(query.encode()).hexdigest()
+    if os.path.exists(f"/tmp/{hash}") and (not force_read):
+        logger.info(f"use cached dataset {hash}")
+        df = p.read_parquet(f"/tmp/{hash}")
+        return df
+    logger.info(f"cached dataset not used")
+    df = p.read_sql(
+        query,
+        "mysql://default:@localhost:9004",
+        protocol="text",
+    )
+    bytes = io.BytesIO()
+    df.write_csv(bytes)
+    df = p.read_csv(bytes.getvalue())
+    if not force_read:
+        logger.info(f"generating cache data {hash}")
+        df.write_parquet(f"/tmp/{hash}", use_pyarrow=True)
+    return df
+
+
 def to_clickhouse(df, table):
     client = ch_client("localhost")
-    return client.execute(f"INSERT INTO {table} VALUES", df.to_dict(orient="records"))
+    return client.execute(f"INSERT INTO {table} VALUES", df.to_dicts())
 
 
 def read(f, **kwargs):
-    if re.search("\.csv$", f):
+    p = Path(f)
+    if p.suffix == ".csv":
         try:
             logger.info("trying read csv with arrow")
             return pa.csv.read_csv(f, **kwargs).to_pandas()
         except:
             logger.info("fall back to pandas")
             return rcsv(f, **kwargs)
-    if re.search("\.dta$", f):
+    if p.suffix == ".dta":
         return rdta(f, **kwargs)
-    if re.search("(\.pq|\.parquet|\.par)$", f):
+    if (
+        p.suffix == ".pq"
+        or p.suffix == ".pa"
+        or p.suffix == ".parquet"
+        or p.suffix == ".parq"
+    ):
         return rpq(f, **kwargs)
-    if re.search("\.sas7bdat$", f):
-        return pd.read_sas(f, encoding="latin1", **kwargs)
+    if f.suffix == ".sas7bdat":
+        return pyreadstat.read_sas7bdat(f)[0]
+
+
+def _modify_polars_dtype(df):
+    return df.with_columns(
+        [
+            p.col(p.Int32).cast(p.Int64).keep_name(),
+            p.col(p.Float32).cast(p.Float64).keep_name(),
+        ]
+    )
+
+
+def pcsv(f):
+    return p.read_csv(f, null_values=[""], parse_dates=True, infer_schema_length=None)
+
+
+def read_p(f, **kwargs):
+    f = Path(f)
+    if f.suffix == ".csv":
+        return p.read_csv(
+            f, null_values=[""], parse_dates=True, infer_schema_length=None
+        )
+    if f.suffix == ".dta":
+        df = p.from_pandas(rdta(f, **kwargs))
+        return _modify_polars_dtype(dfname(df))
+    if (
+        f.suffix == ".pq"
+        or f.suffix == ".pa"
+        or f.suffix == ".parquet"
+        or f.suffix == ".parq"
+    ):
+        return _modify_polars_dtype(dfname(p.read_parquet(f, use_pyarrow=True)))
+    if f.suffix == ".sas7bdat":
+        df = p.from_pandas(pyreadstat.read_sas7bdat(f, encoding="latin1")[0])
+        return _modify_polars_dtype(dfname(df))
 
 
 sns.set()
@@ -124,22 +215,25 @@ DROPBOX = "/mnt/dd/Dropbox/"
 if socket.gethostname() == "tr":
     from pandarallel import pandarallel
 
-    wrdscon = create_engine("postgresql://leo@localhost:5432/wrds")
+    wrdscon = "postgresql://leo@localhost:5432/wrds"
+    factset = "postgresql://leo@localhost:5432/factset"
     con = create_engine("postgresql://leo@localhost:5432/leo")
     othercon = create_engine("postgresql://leo@localhost:5432/other")
     tmpcon = create_engine("postgresql://leo@localhost:5432/tmp")
 else:
-    wrdscon = create_engine("postgresql://leo: @129.94.138.139:5432/wrds")
-    con = create_engine("postgresql://leo: @129.94.138.139:5432/leo")
-    othercon = create_engine("postgresql://leo: @129.94.138.139:5432/other")
-    tmpcon = create_engine("postgresql://leo: @129.94.138.139:5432/tmp")
+    wrdscon = "postgresql://leo: @129.94.138.180:5432/wrds"
+    con = create_engine("postgresql://leo: @129.94.138.180:5432/leo")
+    othercon = create_engine("postgresql://leo: @129.94.138.180:5432/other")
+    tmpcon = create_engine("postgresql://leo: @129.94.138.180:5432/tmp")
 
 
 def check_uniq(df, l):
+    if isinstance(df, p.internals.dataframe.DataFrame):
+        return df.groupby(l).count().filter(c("count") > 1)
     return df.groupby(l).size()[lambda s: s > 1]
 
 
-wrdspath = Path("/mnt/db/wrds_dataset/")
+wrdspath = Path("/mnt/nas/wrds_dataset/")
 
 
 def rwrds(query, parse_dates=None):
@@ -150,11 +244,9 @@ def rwrds(query, parse_dates=None):
     ):
         return pd.read_parquet(f"/mnt/da/Dropbox/wrds_dataset/{query}")
     elif "select " in query or "SELECT " in query:
-        return pd.read_sql(query, wrdscon, parse_dates=parse_dates)
+        return cx.read_sql("postgresql://leo@localhost:5432/wrds", query)
     elif len(re.findall(r"\w+", query)) == 1:
-        return pd.read_sql(
-            f"""select * from {query}""", wrdscon, parse_dates=parse_dates
-        )
+        return cx.read_sql(wrdscon, f"""select * from {query}""")
 
 
 def read_other(query, parse_dates=None):
@@ -191,10 +283,8 @@ def to_pandas(df):
     return pd.read_parquet(f)
 
 
-def initspark():
-    global spark
-    spark = SparkSession.builder.getOrCreate()
-    return spark
+def spark_init():
+    return SparkSession.builder.getOrCreate()
 
 
 def extract_table_names(query):
@@ -207,21 +297,26 @@ def extract_table_names(query):
     return set(tables)
 
 
-def winsor(df, varlist, *, by=None, limit=0.01):
+def winsor(df, varlist, *, by=None, limits=0.01):
     if by:
         for var in varlist:
             for bys in sorted(df[by].unique()):
                 try:
-                    df.loc[(df[var].notnull()) & (df[by] == bys), var] = winsorize(
-                        df.loc[(df[var].notnull()) & (df[by] == bys), var], limits=limit
+                    winsorize(
+                        df[df[by] == bys][var],
+                        limits=limits,
+                        nan_policy="omit",
+                        inplace=True,
                     )
                 except:
-                    print(var, bys, " ---- failed")
+                    logger.warning(var, bys, " ---- failed")
     else:
         for var in varlist:
-            print(var)
-            df.loc[(df[var].notnull()), var] = winsorize(
-                df.loc[(df[var].notnull()), var], limits=limit
+            winsorize(
+                df[var],
+                limits=limits,
+                nan_policy="omit",
+                inplace=True,
             )
     return df
 
@@ -271,10 +366,19 @@ def cartesian(df1, df2=pd.DataFrame(range(20), columns=["plus"])):
 
 
 def dfname(df):
-    df.columns = [x.lower() for x in list(df)]
-    for c in list(df):
-        df.rename({c: "_".join(re.findall("\w+", c))}, axis=1, inplace=True)
-    return df
+    if isinstance(df, p.internals.dataframe.DataFrame):
+        logger.info("Polars dataframe")
+        return _modify_polars_dtype(
+            df.rename(
+                {c: "_".join(re.findall("\w+", str(c).lower())) for c in df.columns}
+            )
+        )
+
+    logger.info("Pandas dataframe")
+    return df.rename(
+        {c: "_".join(re.findall("\w+", str(c).lower())) for c in df.columns},
+        axis=1,
+    )
 
 
 def spark_sql(sql, folder=None):
@@ -298,10 +402,14 @@ def ssql(sql):
 
 
 def spark_pq(file, **kwargs):
+    if "spark" not in vars():
+        spark = spark_init()
     return spark.read.parquet(file)
 
 
 def spark_csv(file, **kwargs):
+    if "spark" not in vars():
+        spark = spark_init()
     return spark.read.csv(
         file, inferSchema=True, enforceSchema=False, header=True, **kwargs
     )
@@ -316,6 +424,8 @@ def reg_tb(path, name=None):
 
 
 def spark_pg(query=None, db="wrds"):
+    if "spark" not in vars():
+        spark = spark_init()
     return (
         spark.read.format("jdbc")
         .option("url", f"jdbc:postgresql://localhost:5432/{db}")
@@ -439,13 +549,16 @@ def create_table(df, table, ob, date_cols=[], load_data=True):
             df_to_load[d] = (
                 pd.to_numeric(df_to_load[d].dt.strftime("%Y%m%d"))
                 .astype("Int32")
-                .replace([np.nan], [None])
+                .astype(object)
+                .replace(np.nan, None)
             )
             continue
         if "Int" in str(ds[d]) or "int" in str(ds[d]):
-            df_to_load[d] = df_to_load[d].astype("Int64").replace([np.nan], [None])
+            df_to_load[d] = (
+                df_to_load[d].astype("Int64").astype(object).replace(np.nan, None)
+            )
             continue
-        df_to_load[d] = df_to_load[d].replace([np.nan], [None])
+        df_to_load[d] = df_to_load[d].astype(object).replace(np.nan, None)
     df_to_load.info()
     if load_data:
         return to_clickhouse(df_to_load, table)
@@ -471,11 +584,16 @@ def cleantype(df):
                     except:
                         pass
                 except:
-                    df_to_load[c] = df_to_load[c].astype(str)
+                    df_to_load[c] = df_to_load[c].astype("string")
     return df_to_load
 
 
 def info(ds):
+    if type(ds) == p.internals.dataframe.DataFrame:
+        display(ds.describe())
+        display(ds.select([p.all().null_count() / p.count()]))
+        return ds
+
     return ds.info(show_counts=True, verbose=True)
 
 
@@ -483,7 +601,7 @@ def read_str(file, encoding="latin1", as_whole=False):
     with open(file, encoding=encoding) as f:
         if as_whole:
             return f.read()
-        return f.readlines()
+        return [x.strip() for x in f.readlines()]
 
 
 class csv_writer:
@@ -514,7 +632,7 @@ class pq_writer:
         return self
 
     def write(self, table):
-        self.wr.write_table(pa.Table.from_pandas(table))
+        self.wr.write_table(pa.Table.from_pandas(table, preserve_index=False))
 
     def __exit__(self, exc_type, exc_value, exc_tb):
         self.wr.close()
@@ -525,3 +643,152 @@ def rduck(query, db=""):
         db = dk.connect(db, read_only=True)
         return dfname(db.execute(query).df())
     return dk.query(query).df()
+
+
+def expand_ts(df, i, t, delta=1):
+    df = df.sort_values([i, t])
+    _min = df.groupby(i)[t].min()
+    _max = df.groupby(i)[t].max()
+    delta_i = (_max - _min).rename("_t").reset_index()
+    a = _min.reset_index().merge(delta_i)
+    res = []
+    for r in a.values:
+        for _t in np.arange(0, r[2], delta):
+            res.append([r[0], r[1] + _t])
+    return pd.DataFrame(res, columns=[i, t])
+
+
+def stdize(s):
+    return (s - s.mean()) / s.std()
+
+
+# a few commands to use output
+
+
+def wpar(s, x):
+    x = Path(x)
+    out = x.with_suffix(".pq")
+    if isinstance(s, p.internals.dataframe.DataFrame):
+        s.write_parquet(out, use_pyarrow=True)
+        return out
+    if isinstance(s, pd.core.series.Series):
+        s.to_frame().to_parquet(out, index=False)
+    else:
+        s.to_parquet(out, index=False)
+    print(out)
+
+
+def wsta(s, x):
+    x = Path(x).with_suffix(".dta")
+    if isinstance(s, pd.core.series.Series):
+        s.to_frame().to_stata(x, write_index=False, version=None)
+        print(x)
+    elif isinstance(s, pd.core.frame.DataFrame):
+        s.to_stata(x, write_index=False, version=None)
+        print(x)
+    elif isinstance(s, p.internals.dataframe.DataFrame):
+        s.to_pandas().to_stata(x, write_index=False, version=None)
+        print(x)
+
+
+def wcsv(s, x):
+    x = Path(x)
+    if isinstance(s, pd.core.series.Series):
+        s.to_frame().to_csv(x.with_suffix(".csv"), index=False)
+    else:
+        s.to_csv(x.with_suffix(".csv"), index=False)
+
+
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i : i + n]
+
+
+def sasdate(s, c=None):
+    if isinstance(s, p.internals.dataframe.DataFrame):
+        return s.with_column((p.duration(days=c) + p.date(1960, 1, 1)).alias(c))
+    else:
+        return np.datetime64("1960-01-01") + pd.Timedelta(s, "d")
+
+
+def vc(df, g):
+    return df.groupby(g).agg(p.count()).sort("count", reverse=True)
+
+
+def create_ch(df, table, ob, date_cols=[], load_data=True):
+    with open("/tmp/tesdsfsad.txt", "w") as f:
+        print(f"CREATE TABLE IF NOT EXISTS {table} (", file=f)
+        ds = df.schema
+        for d in ds:
+            if d == ob or d in ob.replace("(", "").replace(")", "").split(","):
+                if "Int" in str(ds[d]):
+                    print(d, "Int64", ",", file=f)
+                elif "Float" in str(ds[d]):
+                    print(d, "Float64", ",", file=f)
+                elif "Bool" in str(ds[d]):
+                    print(d, "Boolean", ",", file=f)
+                elif "Date" in str(ds[d]):
+                    print(d, "Int32", ",", file=f)
+                else:
+                    print(d, "String", ",", file=f)
+                continue
+            if "Int" in str(ds[d]):
+                print(d, "Int64", " NULL,", file=f)
+            elif "Float" in str(ds[d]):
+                print(d, "Float64", " NULL,", file=f)
+            elif "Bool" in str(ds[d]):
+                print(d, "Boolean", " NULL,", file=f)
+            elif "Date" in str(ds[d]):
+                print(d, "Int32", " NULL,", file=f)
+            else:
+                print(d, "String", " NULL,", file=f)
+
+        print(f"PRIMARY KEY {ob}", file=f)
+        print(") engine=MergeTree()", file=f)
+    #         print(')',file=f)
+    with open("/tmp/tesdsfsad.txt") as f:
+        c = ch_client("localhost")
+        if c.execute(f"exists {table}")[0][0]:
+            logger.warning("Table exists, dropping")
+        c.execute(f"drop table if exists {table}")
+        c.execute(f.read())
+    for d in ds:
+        if "Date" in str(ds[d]):
+            df = df.with_column(
+                p.col(d).dt.year() * 10000
+                + p.col(d).dt.month() * 100
+                + p.col(d).dt.day()
+            )
+            continue
+    if load_data:
+        print("start to load")
+        return to_clickhouse(df, table)
+
+
+def convert_inf(df):
+    df = _modify_polars_dtype(df).with_columns(
+        p.when(p.col(p.Float64).is_infinite())
+        .then(None)
+        .otherwise(p.col(p.Float64))
+        .keep_name()
+    )
+
+    return df.fill_nan(None)
+
+
+def winsor_float(df, limits=(0.01, 0.99)):
+    df = convert_inf(df)
+    return df.with_columns(
+        [
+            p.when(p.col(p.Float64) > p.col(p.Float64).quantile(limits[1]))
+            .then(p.col(p.Float64).quantile(limits[1]))
+            .otherwise(p.col(p.Float64))
+        ]
+    ).with_columns(
+        [
+            p.when(p.col(p.Float64) < p.col(p.Float64).quantile(limits[0]))
+            .then(p.col(p.Float64).quantile(limits[0]))
+            .otherwise(p.col(p.Float64))
+        ]
+    )
