@@ -8,7 +8,7 @@ seaborn
 statsmodels
 wrds
 scipy
-sklearn
+scikit-learn
 tqdm
 plotly
 pyarrow
@@ -26,3 +26,4 @@ jupyterlab
 pyreadstat
 icecream
 psycopg2-binary
+openpyxl
