@@ -20,7 +20,9 @@ duckdb
 altair
 altair_saver
 connectorx
-pyreadstat
+polars[all]
+jupyter
 jupyterlab
+pyreadstat
 icecream
 psycopg2-binary
