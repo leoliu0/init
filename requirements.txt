@@ -19,7 +19,7 @@ icecream
 duckdb
 altair
 altair_saver
-conectorx
+connectorx
 pyreadstat
 jupyterlab
 icecream
