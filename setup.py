@@ -11,11 +11,8 @@ setup(
     url="https://github.com/leoliu0/init",  # Provide either the link to your github or to your website
     download_url="https://github.com/leoliu0/init/",  # I explain this later on
     #  keywords = ['SOME', 'MEANINGFULL', 'KEYWORDS'],   # Keywords that define your package best
-    #  install_requires=[
-    #  'validators',
-    #  'beautifulsoup4',
-    #  ],
-    #  scripts=['__init__.py'],
+    install_requires=open("requirements.txt").readlines(),
+    # scripts=['__init__.py'],
     classifiers=[
         "Development Status :: 3 - Alpha",  # Chose either "3 - Alpha", "4 - Beta" or "5 - Production/Stable" as the current state of your package
         "Intended Audience :: Developers",  # Define that your audience are developers

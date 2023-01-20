@@ -75,61 +75,11 @@ from io import StringIO
 from multiprocessing import Pool
 from pathlib import Path
 
+import altair as alt
+
+alt.data_transformers.disable_max_rows()
+
 ch_clt = ch_client("localhost")
-
-
-@p.api.register_dataframe_namespace("write")
-class Write:
-    def __init__(self, df: p.DataFrame):
-        self._df = df
-
-    def parquet(self, outfile):
-        out = Path(outfile).with_suffix(".pq")
-        print(out)
-        self._df.write_parquet(out)
-
-    def stata(self, outfile):
-        out = Path(outfile).with_suffix(".dta")
-        print(out)
-        self._df.to_pandas().to_stata(out, write_index=False)
-
-    def csv(self, outfile):
-        out = Path(outfile).with_suffix(".csv")
-        print(out)
-        self._df.write_csv(out)
-
-    def excel(self, outfile):
-        out = Path(outfile).with_suffix(".xlsx")
-        print(out)
-        self._df.to_pandas().to_excel(out, index=False)
-
-
-@p.api.register_dataframe_namespace("a")
-class A:
-    def __init__(self, df: p.DataFrame):
-        self._df = df
-
-    def _join(self, df1, df2, on=[], how="inner"):
-        keys = list(set(df1.columns) & set(df2.columns))
-        print(f"common column: {keys}")
-        if not on:
-            on = keys
-        print(f"Joining on {on}")
-        count = self._df.groupby(on).count()
-        print(
-            f"""{(count.filter(c("count")>1).shape[0]*100 / count.shape[0]):.2f}% Duplicates on df_left"""
-        )
-        count = df2.groupby(on).count()
-        print(
-            f"""{(count.filter(c("count")>1).shape[0]*100 / count.shape[0]):.2f}% Duplicates on df_right"""
-        )
-        return self._df.join(df2, on=on, how=how)
-
-    def join(self, df2: p.DataFrame, on=[]):
-        return self._join(self._df, df2, on=on)
-
-    def left_join(self, df2: p.DataFrame, on=[]):
-        return self._join(self._df, df2, on=on, how="left")
 
 
 def rch(query, df_type="pandas", cache=None, force_read=False):
