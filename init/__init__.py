@@ -1,53 +1,54 @@
-from altair.utils.data import limit_rows
 import dbm
-from tqdm.notebook import tqdm, trange
-import pyreadstat
-from IPython.display import display
-from pprint import pprint
-import connectorx as cx
+import shutil
 import random
-from sqlalchemy import create_engine
-from sklearn import preprocessing
-from scipy.stats.mstats import winsorize
-from scipy import stats
-from pyspark.sql.window import Window
-from pyspark.sql.types import *
-from pyspark.sql import *
-import pyspark.sql.functions as F
-from pyspark.sql.functions import col
-import pyspark
-from pandas import to_numeric as tonum
-from pandas import to_datetime as todate
-from pandas import read_stata as rdta
-from pandas import read_sql as rsql
-from pandas import read_parquet as rpq
-from pandas import read_csv as rcsv
-from pandas import json_normalize
-from loguru import logger
-from icecream import ic
-from rapidfuzz import fuzz
-from clickhouse_driver import Client as ch_client
-import wrds
-import statsmodels.api as sm
-import seaborn as sns
-import requests
-import pyarrow.parquet as pq
+from pprint import pprint
+
+import connectorx as cx
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import polars as p
+import psycopg2
 import pyarrow as pa
 import pyarrow.csv
-import psycopg2
-import polars as p
+import pyarrow.parquet as pq
+import pyreadstat
+import pyspark
+import pyspark.sql.functions as F
+import requests
+import seaborn as sns
+import statsmodels.api as sm
+import wrds
+from altair.utils.data import limit_rows
+from clickhouse_driver import Client as ch_client
+from icecream import ic
+from IPython.display import display
+from loguru import logger
+from pandas import json_normalize
+from pandas import read_csv as rcsv
+from pandas import read_parquet as rpq
+from pandas import read_sql as rsql
+from pandas import read_stata as rdta
+from pandas import to_datetime as todate
+from pandas import to_numeric as tonum
 from polars import col as c
-import plotly.express as px
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+from pyspark.sql import *
+from pyspark.sql.functions import col
+from pyspark.sql.types import *
+from pyspark.sql.window import Window
+from rapidfuzz import fuzz
+from scipy import stats
+from scipy.stats.mstats import winsorize
+from sklearn import preprocessing
+from sqlalchemy import create_engine
+from tqdm.notebook import tqdm, trange
 
 p.Config.set_tbl_rows(50)
 p.Config.set_tbl_cols(100)
 p.Config.set_fmt_str_lengths(200)
 
 plt.style.use("tableau-colorblind10")
-import duckdb as dk
 import argparse
 import csv
 import fileinput
@@ -69,39 +70,42 @@ import uuid
 import warnings
 from collections import *
 from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from glob import glob
 from io import StringIO
 from multiprocessing import Pool
 from pathlib import Path
 
+import duckdb as dk
+
 ch_clt = ch_client("localhost")
+pd.set_option("use_inf_as_na", True)
 
 
-@p.api.register_dataframe_namespace("write")
+@p.api.register_dataframe_namespace("w")
 class Write:
     def __init__(self, df: p.DataFrame):
         self._df = df
 
-    def parquet(self, outfile):
+    def pq(self, outfile):
         out = Path(outfile).with_suffix(".pq")
         print(out)
-        self._df.write_parquet(out)
+        convert_inf(self._df).write_parquet(out)
 
-    def stata(self, outfile):
+    def dta(self, outfile):
         out = Path(outfile).with_suffix(".dta")
         print(out)
-        self._df.to_pandas().to_stata(out, write_index=False)
+        convert_inf(self._df).to_pandas().to_stata(out, write_index=False)
 
     def csv(self, outfile):
         out = Path(outfile).with_suffix(".csv")
         print(out)
-        self._df.write_csv(out)
+        convert_inf(self._df).write_csv(out)
 
     def excel(self, outfile):
         out = Path(outfile).with_suffix(".xlsx")
         print(out)
-        self._df.to_pandas().to_excel(out, index=False)
+        convert_inf(self._df).to_pandas().to_excel(out, index=False)
 
 
 @p.api.register_dataframe_namespace("a")
@@ -109,12 +113,20 @@ class A:
     def __init__(self, df: p.DataFrame):
         self._df = df
 
+    def uq(self, on):
+        return self._df.groupby(on).count().filter(c("count") > 1)
+
+    def ms(self):
+        return self._df.select([p.all().null_count() * 100 / p.count()])
+
+    def info(self):
+        return info(self._df)
+
     def _join(self, df1, df2, on=[], how="inner"):
         keys = list(set(df1.columns) & set(df2.columns))
-        print(f"common column: {keys}")
         if not on:
             on = keys
-        print(f"Joining on {on}")
+        print(f"common column: {keys}, Joining on {on}")
         count = self._df.groupby(on).count()
         print(
             f"""{(count.filter(c("count")>1).shape[0]*100 / count.shape[0]):.2f}% Duplicates on df_left"""
@@ -130,6 +142,9 @@ class A:
 
     def left_join(self, df2: p.DataFrame, on=[]):
         return self._join(self._df, df2, on=on, how="left")
+
+    def u(self, keys):
+        return self._df.groupby(keys).count().filter(c("count") > 1).sort("count")
 
 
 def rch(query, df_type="pandas", cache=None, force_read=False):
@@ -204,7 +219,7 @@ def rcp(query, cache="memory", force_read=False):
 
 def to_clickhouse(df, table):
     client = ch_client("localhost")
-    return client.execute(f"INSERT INTO {table} VALUES", df.to_dicts())
+    return client.execute(f"INSERT INTO {table} VALUES", tqdm(df.to_dicts()))
 
 
 def read(f, **kwargs):
@@ -268,6 +283,8 @@ def read_p(f, **kwargs):
     if f.suffix == ".sas7bdat":
         df = p.from_pandas(pd.read_sas(f, encoding="latin1"))
         return modify_polars_dtype(dfname(df))
+    if f.suffix == ".xlsx":
+        return dfname(p.read_excel(f))
 
 
 sns.set()
@@ -685,7 +702,7 @@ def info(ds, u=[]):
         if u:
             display(check_uniq(ds, u))
         display(ds.describe())
-        display(ds.select([p.all().null_count() / p.count()]))
+        display(ds.select([p.all().null_count() * 100 / p.count()]))
         return ds
 
     return ds.info(show_counts=True, verbose=True)

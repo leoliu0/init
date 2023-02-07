@@ -27,3 +27,4 @@ pyreadstat
 icecream
 psycopg2-binary
 openpyxl
+rapidfuzz
