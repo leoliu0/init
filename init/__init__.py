@@ -116,8 +116,14 @@ class A:
     def uq(self, on):
         return self._df.groupby(on).count().filter(c("count") > 1)
 
+    def vc(self, vars):
+        return vc(self._df, vars)
+
     def ms(self):
         return self._df.select([p.all().null_count() * 100 / p.count()])
+
+    def convert_inf(self):
+        return convert_inf(self._df)
 
     def info(self):
         return info(self._df)
