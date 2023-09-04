@@ -1,9 +1,12 @@
 import dbm
+import subprocess
 import shutil
 import random
 from pprint import pprint
+from pandarallel import pandarallel
 
 import connectorx as cx
+from joblib import load, dump
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -89,22 +92,22 @@ class Write:
 
     def pq(self, outfile):
         out = Path(outfile).with_suffix(".pq")
-        print(out)
+        print(out, self._df.shape)
         convert_inf(self._df).write_parquet(out)
 
     def dta(self, outfile):
         out = Path(outfile).with_suffix(".dta")
-        print(out)
+        print(out, self._df.shape)
         convert_inf(self._df).to_pandas().to_stata(out, write_index=False)
 
     def csv(self, outfile):
         out = Path(outfile).with_suffix(".csv")
-        print(out)
+        print(out, self._df.shape)
         convert_inf(self._df).write_csv(out)
 
     def excel(self, outfile):
         out = Path(outfile).with_suffix(".xlsx")
-        print(out)
+        print(out, self._df.shape)
         convert_inf(self._df).to_pandas().to_excel(out, index=False)
 
 
@@ -118,6 +121,13 @@ class A:
 
     def vc(self, vars):
         return vc(self._df, vars)
+
+    def fyear(self, vars):
+        return self._df.with_columns(
+            p.when(c(vars).dt.month() < 7)
+            .then((c(vars).dt.year() - 1).cast(int))
+            .otherwise(c(vars).dt.year().cast(int))
+        )
 
     def ms(self):
         return self._df.select([p.all().null_count() * 100 / p.count()])
@@ -198,34 +208,27 @@ def rch(query, df_type="pandas", cache=None, force_read=False):
 
 
 def rcp(query, cache="memory", force_read=False):
-
     """
     read clichouse to polars
     """
     hash = hashlib.md5(query.encode()).hexdigest()
     path = f"/home/leo/tmp/{hash}"
-    if os.path.exists(path) and (not force_read):
-        logger.info(f"use cached dataset {hash}")
-        df = p.read_parquet(path)
-        return df
-    logger.info(f"cached dataset not used")
-    df = p.read_sql(
-        query,
-        "mysql://default:@localhost:9004",
-        protocol="text",
-    )
-    bytes = io.BytesIO()
-    df.write_csv(bytes)
-    df = pcsv(bytes.getvalue())
-    if not force_read:
+    if force_read or (not os.path.exists(path)):
         logger.info(f"generating cache data {hash}")
+        subprocess.run(
+            f"""clickhouse-client -q "{query} format CSVWithNames" > {path}""",
+            shell=True,
+        )
+        df = p.read_csv(path, infer_schema_length=100_000, null_values=["", r"\N"])
         df.write_parquet(path)
-    return df
+    else:
+        logger.info(f"use cached dataset {hash}")
+    return p.read_parquet(path)
 
 
 def to_clickhouse(df, table):
     client = ch_client("localhost")
-    return client.execute(f"INSERT INTO {table} VALUES", tqdm(df.to_dicts()))
+    return client.execute(f"INSERT INTO {table} VALUES", df.to_dicts())
 
 
 def read(f, **kwargs):
@@ -265,14 +268,18 @@ def modify_polars_dtype(df):
 
 
 def pcsv(f):
-    return p.read_csv(f, null_values=[""], parse_dates=True, infer_schema_length=None)
+    return p.read_csv(
+        f, null_values=[""], try_parse_dates=True, infer_schema_length=None
+    )
 
 
-def read_p(f, **kwargs):
+def read_p(f, normalize=True, **kwargs):
     f = Path(f)
     if f.suffix == ".csv":
-        return p.read_csv(
-            f, null_values=[""], parse_dates=True, infer_schema_length=None
+        return dfname(
+            p.read_csv(
+                f, null_values=[""], try_parse_dates=True, infer_schema_length=None
+            )
         )
     if f.suffix == ".dta":
         df = p.from_pandas(rdta(f, **kwargs))
@@ -297,55 +304,62 @@ sns.set()
 sys.setrecursionlimit(100000000)
 
 pd.set_option("display.max_columns", 100)
+pd.set_option("display.max_colwidth", 200)
 pd.set_option("display.max_rows", 200)
 pd.set_option("display.float_format", lambda x: "%.2f" % x)
 pd.set_option("use_inf_as_na", True)
-pd.options.display.max_colwidth = 100
 pd.options.mode.chained_assignment = None  # default='warn'
 
-DROPBOX = "/mnt/dd/Dropbox/"
-if socket.gethostname() == "tr":
-    from pandarallel import pandarallel
+DROPBOX = "/mnt/da/Dropbox/"
 
-    wrdscon = "postgresql://leo@localhost:5432/wrds"
-    factset = "postgresql://leo@localhost:5432/factset"
-    con = create_engine("postgresql://leo@localhost:5432/leo")
-    othercon = create_engine("postgresql://leo@localhost:5432/other")
-    tmpcon = create_engine("postgresql://leo@localhost:5432/tmp")
-else:
-    wrdscon = "postgresql://leo: @129.94.138.180:5432/wrds"
-    con = create_engine("postgresql://leo: @129.94.138.180:5432/leo")
-    othercon = create_engine("postgresql://leo: @129.94.138.180:5432/other")
-    tmpcon = create_engine("postgresql://leo: @129.94.138.180:5432/tmp")
+wrdscon = "postgresql://leo@localhost:5432/wrds"
+factset = "postgresql://leo@localhost:5432/factset"
 
 
 def check_uniq(df, l):
-    if isinstance(df, p.internals.dataframe.DataFrame):
+    if isinstance(df, p.DataFrame):
         dup = df.groupby(l).count().filter(c("count") > 1)
-        return df.join(dup, on=l)
+        return df.join(dup, on=l).sort(l)
     return df.groupby(l).size()[lambda s: s > 1]
 
 
 wrdspath = Path("/mnt/nas/wrds_dataset/")
 
 
-def rwrds(query, parse_dates=None):
+def rwrds(query, df_type="pandas"):
+    if df_type == "pandas":
+        reader = pd
+        sql = pd.read_sql
+    elif df_type == "polars":
+        reader = p
+        sql = p.read_database
+    else:
+        raise ValueError("must be pandas or polars df")
+
     if (
         re.search(r".pq$", query)
         or re.search(r".pa$", query)
         or re.search(r".parquet$", query)
     ):
-        return pd.read_parquet(f"/mnt/da/Dropbox/wrds_dataset/{query}")
+        return reader.read_parquet(f"/mnt/da/Dropbox/wrds_dataset/{query}")
     elif "select " in query or "SELECT " in query:
-        try:
-            return cx.read_sql("postgresql://leo@localhost:5432/wrds", query)
-        except:
-            return pd.read_sql(
-                query, create_engine("postgresql://leo@localhost:5432/wrds")
-            )
+        return sql(query, "postgresql://leo@localhost:5432/wrds")
 
     elif len(re.findall(r"\w+", query)) == 1:
-        return cx.read_sql(wrdscon, f"""select * from {query}""")
+        return sql(f"""select * from {query}""", wrdscon)
+
+
+def pwrds(query):
+    if (
+        re.search(r".pq$", query)
+        or re.search(r".pa$", query)
+        or re.search(r".parquet$", query)
+    ):
+        return p.read_parquet(f"/mnt/da/Dropbox/wrds_dataset/{query}")
+    elif "select " in query or "SELECT " in query:
+        return p.read_sql(query, "postgresql://leo@localhost:5432/wrds")
+    elif len(re.findall(r"\w+", query)) == 1:
+        return p.read_sql(wrdscon, f"""select * from {query}""")
 
 
 def read_other(query, parse_dates=None):
@@ -382,10 +396,11 @@ def to_pandas(df):
     return pd.read_parquet(f)
 
 
-def spark_init():
+def spark_init(mem=50):
+    print(f"{mem}g")
     return (
-        SparkSession.builder.config("spark.driver.memory", "50g")
-        .config("spark.executor.memory", "50g")
+        SparkSession.builder.config("spark.driver.memory", f"{mem}g")
+        .config("spark.executor.memory", f"{mem}g")
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .config("spark.local.dir", "/home/leo/tmp")
         .config("spark.driver.maxResultSize", "0")
@@ -472,7 +487,7 @@ def cartesian(df1, df2=pd.DataFrame(range(20), columns=["plus"])):
 
 
 def dfname(df):
-    if isinstance(df, p.internals.dataframe.DataFrame):
+    if isinstance(df, p.DataFrame):
         logger.info("Polars dataframe")
         return modify_polars_dtype(
             df.rename(
@@ -578,14 +593,9 @@ def writer(v, filename):
             wr.writerow([x, y])
 
 
-def savepickle(var, filename):
-    with open(filename, "wb") as f:
-        return pickle.dump(var, f)
-
-
-def loadpickle(filename):
-    with open(filename, "rb") as f:
-        return pickle.load(f)
+def load_dbm(filename, key):
+    with dbm.open(filename, "r") as f:
+        return f[key].decode()
 
 
 def sedfile(string, filename):
@@ -704,7 +714,7 @@ def cleantype(df):
 
 
 def info(ds, u=[]):
-    if type(ds) == p.internals.dataframe.DataFrame:
+    if type(ds) == p.DataFrame:
         if u:
             display(check_uniq(ds, u))
         display(ds.describe())
@@ -714,11 +724,9 @@ def info(ds, u=[]):
     return ds.info(show_counts=True, verbose=True)
 
 
-def read_str(file, encoding="latin1", as_whole=False):
+def read_str(file, encoding="latin1"):
     with open(file, encoding=encoding) as f:
-        if as_whole:
-            return f.read()
-        return [x.strip() for x in f.readlines()]
+        return f.read().splitlines()
 
 
 class csv_writer:
@@ -758,8 +766,8 @@ class pq_writer:
 def rduck(query, db=""):
     if db:
         db = dk.connect(db, read_only=True)
-        return dfname(db.execute(query).df())
-    return dk.query(query).df()
+        return dfname(db.execute(query).pl())
+    return dk.query(query).pl()
 
 
 def expand_ts(df, i, t, delta=1):
@@ -785,7 +793,7 @@ def stdize(s):
 def wpar(s, x):
     x = Path(x)
     out = x.with_suffix(".pq")
-    if isinstance(s, p.internals.dataframe.DataFrame):
+    if isinstance(s, p.DataFrame):
         s.write_parquet(out, compression="snappy")
         return out, s.shape
     if isinstance(s, pd.core.series.Series):
@@ -799,13 +807,13 @@ def wsta(s, x):
     x = Path(x).with_suffix(".dta")
     if isinstance(s, pd.core.series.Series):
         s.to_frame().to_stata(x, write_index=False, version=None)
-        print(x)
+        print(x, "  ", len(s))
     elif isinstance(s, pd.core.frame.DataFrame):
         s.to_stata(x, write_index=False, version=None)
-        print(x)
-    elif isinstance(s, p.internals.dataframe.DataFrame):
+        print(x, "  ", len(s))
+    elif isinstance(s, p.DataFrame):
         s.to_pandas().to_stata(x, write_index=False, version=None)
-        print(x)
+        print(x, "  ", len(s))
 
 
 def wcsv(s, x):
@@ -823,16 +831,16 @@ def chunks(lst, n):
 
 
 def sasdate(df, date=None):
-    if isinstance(df, p.internals.dataframe.DataFrame):
-        return df.with_column(
+    if isinstance(df, p.DataFrame):
+        return df.with_columns(
             (p.date(1960, 1, 1) + p.duration(days=c(date))).alias(date)
         )
     else:
-        return np.datetime64("1960-01-01") + pd.Timedelta(s, "d")
+        return np.datetime64("1960-01-01") + pd.to_timedelta(df[date], "d")
 
 
 def vc(df, g):
-    return df.groupby(g).agg(p.count()).sort("count", reverse=True)
+    return df.groupby(g).agg(p.count()).sort("count", descending=True)
 
 
 def create_ch(df, table, ob, date_cols=[], load_data=True):
@@ -874,7 +882,7 @@ def create_ch(df, table, ob, date_cols=[], load_data=True):
         c.execute(f.read())
     for d in ds:
         if "Date" in str(ds[d]):
-            df = df.with_column(
+            df = df.with_columns(
                 p.col(d).dt.year() * 10000
                 + p.col(d).dt.month() * 100
                 + p.col(d).dt.day()
@@ -882,7 +890,8 @@ def create_ch(df, table, ob, date_cols=[], load_data=True):
             continue
     if load_data:
         print("start to load")
-        return to_clickhouse(df, table)
+        print(f"loaded {to_clickhouse(df, table)}")
+    return df
 
 
 def convert_inf(df):
@@ -918,3 +927,12 @@ def update_dbm(dbfile, key, value):
         db[key] = value
         print("Key: ", key)
         print("Value: ", value)
+
+
+def grep(s, file):
+    return [r for r in read_str(file) if s in r]
+
+
+def egrep(s, file):
+    regex = re.compile(s)
+    return [r for r in read_str(file) if regex.search(r)]
