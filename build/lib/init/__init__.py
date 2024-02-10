@@ -1,17 +1,16 @@
 import dbm
-import random
 import shelve
-import shutil
 import subprocess
+import shutil
+import random
 from pprint import pprint
+from pandarallel import pandarallel
+import gensim
 
 import connectorx as cx
-import gensim
-import hvplot
-import matplotlib as mpl
+from joblib import load, dump
 import matplotlib.pyplot as plt
-from joblib import dump, load
-from pandarallel import pandarallel
+import matplotlib as mpl
 
 mpl.rcParams["savefig.dpi"] = 300  # Higher DPI for better quality
 mpl.rcParams["savefig.bbox"] = "tight"

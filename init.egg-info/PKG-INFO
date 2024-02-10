@@ -1,0 +1,51 @@
+Metadata-Version: 2.1
+Name: init
+Version: 0.1
+Summary: load my useful packages and functions
+Home-page: https://github.com/leoliu0/init
+Download-URL: https://github.com/leoliu0/init/
+Author: Leo Liu
+Author-email: auleo.liu@gmail.com
+License: MIT
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Software Development :: Build Tools
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+License-File: LICENSE
+Requires-Dist: black
+Requires-Dist: isort
+Requires-Dist: matplotlib
+Requires-Dist: pandas
+Requires-Dist: pandarallel
+Requires-Dist: pyspark
+Requires-Dist: requests
+Requires-Dist: seaborn
+Requires-Dist: statsmodels
+Requires-Dist: wrds
+Requires-Dist: scipy
+Requires-Dist: scikit-learn
+Requires-Dist: tqdm
+Requires-Dist: plotly
+Requires-Dist: pyarrow
+Requires-Dist: linearmodels
+Requires-Dist: loguru
+Requires-Dist: clickhouse_driver
+Requires-Dist: icecream
+Requires-Dist: duckdb
+Requires-Dist: altair
+Requires-Dist: altair_saver
+Requires-Dist: polars[all]
+Requires-Dist: jupyter
+Requires-Dist: jupyterlab
+Requires-Dist: pyreadstat
+Requires-Dist: icecream
+Requires-Dist: psycopg2-binary
+Requires-Dist: openpyxl
+Requires-Dist: rapidfuzz
+Requires-Dist: gensim
