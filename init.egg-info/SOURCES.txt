@@ -1,6 +1,5 @@
 LICENSE
 README.md
-requirements.txt
 setup.py
 init/__init__.py
 init.egg-info/PKG-INFO

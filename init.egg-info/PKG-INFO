@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: init
 Version: 0.1
 Summary: load my useful packages and functions
@@ -49,3 +49,13 @@ Requires-Dist: psycopg2-binary
 Requires-Dist: openpyxl
 Requires-Dist: rapidfuzz
 Requires-Dist: gensim
+Requires-Dist: hvplot
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: download-url
+Dynamic: home-page
+Dynamic: license
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: summary

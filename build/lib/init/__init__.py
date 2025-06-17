@@ -1,23 +1,19 @@
 import dbm
-import shelve
-import subprocess
-import shutil
 import random
+import shelve
+import shutil
+import subprocess
 from pprint import pprint
-from pandarallel import pandarallel
-import gensim
 
 import connectorx as cx
-from joblib import load, dump
-import matplotlib.pyplot as plt
+import hvplot
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 
-mpl.rcParams["savefig.dpi"] = 300  # Higher DPI for better quality
-mpl.rcParams["savefig.bbox"] = "tight"
-mpl.rcParams["axes.facecolor"] = "white"  # Explicitly set white background
-mpl.rcParams["grid.color"] = "#d3d3d3"  # Light gray grid
-mpl.rcParams["grid.linestyle"] = "--"
-mpl.rcParams["grid.linewidth"] = 0.5
+# plotting defaults
+from joblib import dump, load
+from pandarallel import pandarallel
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -82,14 +78,17 @@ import urllib
 import uuid
 import warnings
 from collections import *
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from glob import glob
 from io import StringIO
+import multiprocessing
 from multiprocessing import Pool
 from pathlib import Path
 
 import duckdb as dk
+
+multiprocessing.set_start_method("spawn")
 
 ch_clt = ch_client("localhost")
 pd.set_option("use_inf_as_na", True)
@@ -100,20 +99,40 @@ class Write:
     def __init__(self, df: p.DataFrame):
         self._df = df
 
-    def pq(self, outfile):
+    def pq(self, outfile, validate=[]):
+        if validate:
+            assert (
+                self._df.group_by(validate).count().filter(c("count") > 1).is_empty()
+            ), "Not Unique"
         out = Path(outfile).with_suffix(".pq")
         print(out, self._df.shape)
-        convert_inf(self._df).write_parquet(out)
+        df = convert_inf(self._df)
+        if df.shape[1] > 2:
+            df.sort(df.columns[:2]).write_parquet(out)
+        else:
+            df.sort(df.columns[0]).write_parquet(out)
 
-    def dta(self, outfile):
+    def dta(self, outfile, validate=[]):
+        if validate:
+            assert (
+                self._df.group_by(validate).count().filter(c("count") > 1).is_empty()
+            ), "Not Unique"
         out = Path(outfile).with_suffix(".dta")
         print(out, self._df.shape)
         convert_inf(self._df).to_pandas().to_stata(out, write_index=False)
 
-    def csv(self, outfile):
+    def csv(self, outfile, validate=[]):
+        if validate:
+            assert (
+                self._df.group_by(validate).count().filter(c("count") > 1).is_empty()
+            ), "Not Unique"
         out = Path(outfile).with_suffix(".csv")
         print(out, self._df.shape)
-        convert_inf(self._df).write_csv(out)
+        df = convert_inf(self._df)
+        if df.shape[1] > 2:
+            df.sort(df.columns[:2]).write_csv(out)
+        else:
+            df.sort(df.columns[0]).write_csv(out)
 
     def excel(self, outfile):
         out = Path(outfile).with_suffix(".xlsx")
@@ -127,7 +146,7 @@ class A:
         self._df = df
 
     def uq(self, on):
-        return self._df.groupby(on).count().filter(c("count") > 1)
+        return self._df.group_by(on).count().filter(c("count") > 1)
 
     def vc(self, vars):
         return vc(self._df, vars)
@@ -138,6 +157,14 @@ class A:
             .then((c(vars).dt.year() - 1).cast(int))
             .otherwise(c(vars).dt.year().cast(int))
         )
+
+    def sasdate(self, vars):
+        cols = [vars] if isinstance(vars, str) else vars
+        for col in cols:
+            self._df = self._df.with_columns(
+                (p.date(1960, 1, 1) + p.duration(days=c(col))).alias(col)
+            )
+        return self._df
 
     def ms(self):
         return self._df.select([p.all().null_count() * 100 / p.count()])
@@ -153,15 +180,15 @@ class A:
         if not on:
             on = keys
         print(f"common column: {keys}, Joining on {on}")
-        count = self._df.groupby(on).count()
+        count = self._df.group_by(on).count()
         print(
             f"""{(count.filter(c("count")>1).shape[0]*100 / count.shape[0]):.2f}% Duplicates on df_left"""
         )
-        count = df2.groupby(on).count()
+        count = df2.group_by(on).count()
         print(
             f"""{(count.filter(c("count")>1).shape[0]*100 / count.shape[0]):.2f}% Duplicates on df_right"""
         )
-        return self._df.join(df2, on=on, how=how)
+        return self._df.join(df2, on=on, how=how, coalesce=True)
 
     def join(self, df2: p.DataFrame, on=[]):
         return self._join(self._df, df2, on=on)
@@ -169,8 +196,11 @@ class A:
     def left_join(self, df2: p.DataFrame, on=[]):
         return self._join(self._df, df2, on=on, how="left")
 
+    def full_join(self, df2: p.DataFrame, on=[]):
+        return self._join(self._df, df2, on=on, how="full")
+
     def u(self, keys):
-        return self._df.groupby(keys).count().filter(c("count") > 1).sort("count")
+        return self._df.group_by(keys).count().filter(c("count") > 1).sort("count")
 
     def winsor_float(self, limits=(0.01, 0.99)):
         df = convert_inf(self._df)
@@ -189,14 +219,14 @@ class A:
         )
 
 
-def rch(query, df_type="pandas", cache=None, force_read=False):
+def rch(query, df_type="pandas", cache=None, reload=False):
     hash = hashlib.md5(query.encode()).hexdigest()
     if cache == "memory":
         path = f"/tmp/{hash}"
     else:
         path = f"/home/leo/tmp/{hash}"
     if df_type == "pandas":
-        if os.path.exists(path) and not force_read:
+        if os.path.exists(path) and not reload:
             logger.info("use cached dataset")
             return rpq(path)
         x, y = ch_clt.execute(query, with_column_types=True)
@@ -205,7 +235,7 @@ def rch(query, df_type="pandas", cache=None, force_read=False):
         return df
     if df_type == "spark" or df_type == "spandas":
         logger.info(f"use {df_type}")
-        if os.path.exists(path) and not force_read:
+        if os.path.exists(path) and not reload:
             logger.info("use cached dataset")
             if df_type == "spandas":
                 sp.set_option("compute.default_index_type", "distributed")
@@ -233,20 +263,23 @@ def rch(query, df_type="pandas", cache=None, force_read=False):
     raise ValueError("must return pandas or spark dataframe")
 
 
-def rcp(query, cache="memory", force_read=False):
+def rcp(query, cache="memory", reload=False):
     """
     read clickhouse to polars
     """
     hash = hashlib.md5(query.encode()).hexdigest()
     path = f"/home/leo/tmp/{hash}"
-    if force_read or (not os.path.exists(path)):
+    if reload or (not os.path.exists(path)):
         logger.info(f"generating cache data {hash}")
         subprocess.run(
             f"""clickhouse-client -q "{query} format CSVWithNames" > {path}""",
             shell=True,
         )
         df = p.read_csv(
-            path, infer_schema_length=100_000, null_values=["", r"\N", "nan"]
+            path,
+            infer_schema_length=None,
+            null_values=["", r"\N", "nan"],
+            try_parse_dates=True,
         )
         df.write_parquet(path, use_pyarrow=True)
         return df
@@ -255,13 +288,21 @@ def rcp(query, cache="memory", force_read=False):
         return p.read_parquet(path)
 
 
-def rcs(query, cache="memory", force_read=False):
+def rcd(query):
+    """
+    read duckdb to polars
+    """
+    with dk.connect("/home/leo/da/Dropbox/toolbox/d.duckdb", read_only=True) as con:
+        return con.sql(query).pl()
+
+
+def rcs(query, cache="memory", reload=False):
     """
     read clichouse to Spark
     """
     hash = hashlib.md5(query.encode()).hexdigest()
     path = f"/home/leo/tmp/{hash}"
-    if force_read or (not os.path.exists(path)):
+    if reload or (not os.path.exists(path)):
         logger.info(f"generating cache data {hash}")
         subprocess.run(
             f"""clickhouse-client -q "{query} format CSVWithNames" > {path}""",
@@ -302,20 +343,20 @@ def read(f, **kwargs):
         or p.suffix == ".parq"
     ):
         return rpq(f, **kwargs)
-    if f.suffix == ".sas7bdat":
+    if p.suffix == ".sas7bdat":
         return pyreadstat.read_sas7bdat(f)[0]
 
 
 def modify_polars_dtype(df):
     return df.with_columns(
         [
-            p.col(p.UInt8).cast(p.Int64).keep_name(),
-            p.col(p.UInt16).cast(p.Int64).keep_name(),
-            p.col(p.UInt32).cast(p.Int64).keep_name(),
-            p.col(p.UInt64).cast(p.Int64).keep_name(),
-            p.col(p.Int16).cast(p.Int64).keep_name(),
-            p.col(p.Int32).cast(p.Int64).keep_name(),
-            p.col(p.Float32).cast(p.Float64).keep_name(),
+            p.col(p.UInt8).cast(p.Int64).name.keep(),
+            p.col(p.UInt16).cast(p.Int64).name.keep(),
+            p.col(p.UInt32).cast(p.Int64).name.keep(),
+            p.col(p.UInt64).cast(p.Int64).name.keep(),
+            p.col(p.Int16).cast(p.Int64).name.keep(),
+            p.col(p.Int32).cast(p.Int64).name.keep(),
+            p.col(p.Float32).cast(p.Float64).name.keep(),
         ]
     )
 
@@ -332,6 +373,16 @@ def read_p(f, normalize=True):
         return dfname(
             p.read_csv(
                 f, null_values=[""], try_parse_dates=True, infer_schema_length=None
+            )
+        )
+    if f.suffix == ".tsv":
+        return dfname(
+            p.read_csv(
+                f,
+                null_values=[""],
+                try_parse_dates=True,
+                infer_schema_length=None,
+                separator="\t",
             )
         )
     if f.suffix == ".dta":
@@ -371,7 +422,7 @@ con = create_engine("postgresql://leo@localhost:5432/factset")
 
 def check_uniq(df, l):
     if isinstance(df, p.DataFrame):
-        dup = df.groupby(l).count().filter(c("count") > 1)
+        dup = df.group_by(l).count().filter(c("count") > 1)
         return df.join(dup, on=l).sort(l)
     return df.groupby(l).size()[lambda s: s > 1]
 
@@ -385,7 +436,7 @@ def rwrds(query, df_type="pandas"):
         sql = pd.read_sql
     elif df_type == "polars":
         reader = p
-        sql = p.read_database
+        sql = p.read_database_uri
     else:
         raise ValueError("must be pandas or polars df")
 
@@ -454,10 +505,11 @@ def spark_init(mem=50):
     return (
         SparkSession.builder.config("spark.driver.memory", f"{mem}g")
         .config("spark.executor.memory", f"{int(mem/10)}g")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .config("spark.sql.parquet.compression.codec", "zstd")
-        .config("spark.local.dir", "/home/leo/tmp")
+        .config("spark.local.dir", f"{os.environ['HOME']}/tmp")
         .config("spark.driver.maxResultSize", "0")
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+        .config("spark.sql.execution.arrow.pyspark.fallback.enabled", "false")
         .getOrCreate()
     )
 
@@ -549,7 +601,7 @@ def dfname(df):
         # logger.info("Polars dataframe")
         return modify_polars_dtype(
             df.rename(
-                {c: "_".join(re.findall("\w+", str(c).lower())) for c in df.columns}
+                {c: "_".join(re.findall(r"\w+", str(c).lower())) for c in df.columns}
             )
         )
 
@@ -564,7 +616,7 @@ def dfname(df):
     elif isinstance(df, pd.core.frame.DataFrame):
         logger.info("Pandas dataframe")
         return df.rename(
-            {c: "_".join(re.findall("\w+", str(c).lower())) for c in df.columns},
+            {c: "_".join(re.findall(r"\w+", str(c).lower())) for c in df.columns},
             axis=1,
         )
 
@@ -717,7 +769,7 @@ def info(ds, u=[]):
         if u:
             display(check_uniq(ds, u))
         display(ds.describe())
-        display(ds.select([p.all().null_count() * 100 / p.count()]))
+        display(ds.select([p.all().null_count() / p.len() * 100]))
         return ds
 
     return ds.info(show_counts=True, verbose=True)
@@ -779,7 +831,7 @@ def expand_ts(df, i, t, delta=1):
     for r in a.values:
         for _t in np.arange(0, r[2], delta):
             res.append([r[0], r[1] + _t])
-    return pd.DataFrame(res, columns=[i, t])
+    return pd.DataFrame(res, columns=[i, t]).sort_values([i, t])
 
 
 def stdize(s):
@@ -803,10 +855,10 @@ def sasdate(df, date=None):
 
 def vc(df, g):
     return (
-        df.groupby(g)
+        df.group_by(g)
         .agg(p.count())
-        .sort("count", descending=True)
         .filter(c("count") > 1)
+        .sort(["count"], descending=True)
     )
 
 
@@ -857,7 +909,7 @@ def create_ch(df, table, ob, date_cols=[], load_data=True, partition=None):
             continue
     if load_data:
         print("start to load")
-        print(f"loaded {to_clickhouse(df, table,partition)}")
+        print(f"loaded {to_clickhouse(df, table, partition)}")
     return df
 
 
@@ -866,23 +918,41 @@ def convert_inf(df):
         p.when(p.col(p.Float64).is_infinite())
         .then(None)
         .otherwise(p.col(p.Float64))
-        .keep_name()
+        .name.keep()
     )
 
     return df.fill_nan(None)
 
 
 def update_dbm(dbfile, key, value):
+    """
+    Update a key in a dbm file
+    Pass dbfile, key, value as arguments
+    """
     with dbm.open(dbfile, "c") as db:
         db[key] = value
         print("Key: ", key)
         print("Value: ", value)
 
 
-def grep(s, file):
-    return [r for r in read_str(file) if s in r]
+def grep(s, file, shift=0):
+    d = read_str(file)
+    for i, r in enumerate(d):
+        if s in r:
+            yield d[i + shift]
 
 
 def egrep(s, file):
     regex = re.compile(s)
     return [r for r in read_str(file) if regex.search(r)]
+
+
+# plt.rcParams['axes.edgecolor'] = 'black'
+# plt.rcParams['axes.labelcolor'] = 'black'
+# plt.rcParams['xtick.color'] = 'black'
+# plt.rcParams['ytick.color'] = 'black'
+plt.rcParams["figure.facecolor"] = "white"
+plt.rcParams["axes.facecolor"] = "white"
+plt.rcParams["grid.color"] = "grey"
+plt.rcParams["grid.linestyle"] = "-"
+plt.rcParams["grid.linewidth"] = 0.5

@@ -29,3 +29,4 @@ psycopg2-binary
 openpyxl
 rapidfuzz
 gensim
+hvplot
